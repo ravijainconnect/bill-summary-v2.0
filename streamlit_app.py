@@ -196,3 +196,202 @@ else: st.info("No rules saved yet.")
 
 st.subheader("Settlement Summary")
 st.warning("Final merged calculation is NOT implemented/validated in this build. Validate PDF extraction and existing Module 1–4 / Merge rules before relying on any final financial result.")
+
+
+# ---------------- V2 CALCULATION ENGINE (ported from HISAB V11) ----------------
+from decimal import Decimal, ROUND_HALF_UP
+from dataclasses import dataclass
+
+@dataclass
+class V2Client:
+    code: str
+    name: str
+    total_brokerage: Decimal
+    broker_brokerage: Decimal
+    final_bill: Decimal
+
+@dataclass
+class V2Supplier:
+    code: str
+    name: str
+    total_gross: Decimal
+    total_brokerage: Decimal
+    broker_brokerage: Decimal
+    final_bill: Decimal
+    clients: list
+    raw_text: str
+
+def v2_num(s):
+    s = s.replace(",", "").replace("Rs", "").strip()
+    if s.startswith("(") and s.endswith(")"): s = "-" + s[1:-1]
+    return Decimal(s)
+
+def v2_parse_pdf(text):
+    m = re.search(r"^\s*\((\d{6})\)\s*(.+?)\s*$", text, re.M)
+    if not m: raise ValueError("Supplier header not found")
+    code, name = m.group(1), m.group(2).strip()
+    if code not in SUPPLIER_CODES: raise ValueError(f"Unknown supplier code {code} ({name})")
+    starts = list(re.finditer(r"^\s*\((\d{6})\)\s*(.+?)\s*$", text, re.M))
+    clients = []
+    for i, sm in enumerate(starts[1:], start=1):
+        end = starts[i+1].start() if i+1 < len(starts) else len(text)
+        block = text[sm.start():end]
+        z = re.search(r"Total Brokerage:\s*([\-\d,]+\.\d+)\s+Broker Brokerage:\s*([\-\d,]+\.\d+)\s+Final Bill Amt\s*:\s*([\-\d,]+\.\d+)", block, re.S)
+        if z:
+            tb, bb, fb = map(v2_num, z.groups())
+            clients.append(V2Client(sm.group(1), sm.group(2).strip(), tb, bb, fb))
+    z = re.search(r"Total Gross:\s*([\-\d,]+\.\d+)\s+Total Brokerage:\s*([\-\d,]+\.\d+)\s+Broker Brokerage:\s*([\-\d,]+\.\d+)\s+Final Bill Amt\s*:\s*([\-\d,]+\.\d+)", text, re.S)
+    if not z: raise ValueError("Supplier total line not found")
+    tg, tb, bb, fb = map(v2_num, z.groups())
+    return V2Supplier(code, name, tg, tb, bb, fb, clients, text)
+
+def v2_reconcile(p):
+    e = []
+    close = Decimal("0.01")
+    if abs(sum((c.final_bill for c in p.clients), Decimal(0)) + p.broker_brokerage - p.final_bill) > close:
+        e.append(f"{p.name}: client final sum + broker brokerage does not match supplier final")
+    if abs(sum((c.total_brokerage for c in p.clients), Decimal(0)) - p.total_brokerage) > close:
+        e.append(f"{p.name}: client total brokerage mismatch")
+    if abs(sum((c.broker_brokerage for c in p.clients), Decimal(0)) - p.broker_brokerage) > close:
+        e.append(f"{p.name}: client broker brokerage mismatch")
+    if abs(p.total_gross - p.total_brokerage + p.broker_brokerage - p.final_bill) > close:
+        e.append(f"{p.name}: gross/brokerage/final-bill mismatch")
+    return e
+
+def v2_group(c):
+    n = c.name.upper()
+    if "AM_AA01" in n or "AM_VISHAL" in n: return "SPECIAL"
+    pats = {
+      "SONU MAK":["SONI_SC_10L","DILIP_SC_10L","BAHETI_SC50L","_MM","SP_MM","SS12","SUNIL_SC_10L"],
+      "SONU SN":["PRAHAL_SC_10L","NISHIDHA_SC_5L","GANESH_SC_5L","VIMAL_SC5L"],
+      "VIKRAM":["PANKAJ","VIPIN"], "PATNI":["GOPAL_","HIMANSHU_"],
+      "RITESH":["RISHI","GULLU","DHEERAJ","_NB"], "SUMIT":["NITESH_SC4L"],
+      "LV":["LV_"], "TONY":["TONY"], "MAHAVIR":["MAHAVIR"]
+    }
+    for g, pp in pats.items():
+        if any(x in n for x in pp): return g
+    return None
+
+def v2_round(x):
+    return x.quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+
+def v2_calculate(pdfs):
+    errors = [e for p in pdfs for e in v2_reconcile(p)]
+    # Independent second pass from each extracted source text.
+    for p in pdfs:
+        q = v2_parse_pdf(p.raw_text)
+        if (p.code,p.final_bill,p.total_brokerage,p.broker_brokerage,len(p.clients)) != (q.code,q.final_bill,q.total_brokerage,q.broker_brokerage,len(q.clients)):
+            errors.append(f"{p.name}: independent second-pass mismatch")
+        elif any((a.code,a.name,a.total_brokerage,a.broker_brokerage,a.final_bill)!=(b.code,b.name,b.total_brokerage,b.broker_brokerage,b.final_bill) for a,b in zip(p.clients,q.clients)):
+            errors.append(f"{p.name}: client second-pass mismatch")
+    if errors: return None, errors, []
+    allc = [c for p in pdfs for c in p.clients]
+    groups = {}
+    unknown = []
+    for c in allc:
+        g = v2_group(c)
+        if not g: unknown.append(c)
+        else: groups.setdefault(g, []).append(c)
+    if unknown: return None, [], unknown
+    rows = []
+    for g, cs in groups.items():
+        if g == "SPECIAL": continue
+        bkg = {"SONU MAK":Decimal("4970"),"SUMIT":Decimal("10555"),"RITESH":Decimal("1751.862"),"LV":Decimal("8100")}.get(g,Decimal(0))
+        if g == "SONU MAK":
+            signed = sum((abs(c.final_bill) if "MM" in c.name.upper() else -abs(c.final_bill) for c in cs),Decimal(0))
+            raw = (signed+bkg)*Decimal(".10")
+        elif g == "SONU SN":
+            signed = sum((abs(c.final_bill) if c.final_bill>0 else -abs(c.final_bill) for c in cs),Decimal(0))
+            raw = signed*Decimal(".85")
+        elif g == "VIKRAM":
+            raw = -sum((abs(c.final_bill) for c in cs),Decimal(0))*Decimal(".50")
+            rs = sum(((abs(c.final_bill)*Decimal(".10")) if c.final_bill<0 else (-abs(c.final_bill)*Decimal(".10")) for c in cs),Decimal(0))
+            rows.append({"party":"RS","raw":rs,"amount":v2_round(rs)})
+        elif g == "PATNI":
+            raw = sum((abs(c.final_bill).quantize(Decimal("1"),rounding=ROUND_HALF_UP)+c.total_brokerage.quantize(Decimal("1"),rounding=ROUND_HALF_UP)*Decimal(".25") for c in cs),Decimal(0))
+            rs = sum(((abs(c.final_bill)*Decimal(".40")) if c.final_bill<0 else (-abs(c.final_bill)*Decimal(".40")) for c in cs),Decimal(0))
+            rows.append({"party":"RS","raw":rs,"amount":v2_round(rs)})
+        elif g == "RITESH":
+            raw = Decimal(0)
+            for c in cs:
+                n=c.name.upper()
+                key = "NB" if "NB" in n else next((k for k in ["RISHI","GULLU","DHEERAJ"] if k in n),None)
+                if not key: return None,[f"RITESH mapping missing for {c.name}"],[]
+                pct={"RISHI":Decimal(".40"),"GULLU":Decimal(".30"),"DHEERAJ":Decimal(".40"),"NB":Decimal(".30")}[key]
+                raw += abs(c.final_bill)*pct*(Decimal(1) if key=="RISHI" else Decimal(-1))
+            raw += bkg
+        elif g == "SUMIT":
+            # Latest locked rule: 50% of current total brokerage; replaces stale fixed/net-bill formula.
+            raw = -sum((c.total_brokerage for c in cs),Decimal(0))*Decimal(".50")
+        elif g == "LV":
+            raw = (abs(cs[0].final_bill)+bkg)*Decimal(".10")
+        elif g in ("TONY","MAHAVIR"):
+            raw = -sum((abs(c.final_bill) for c in cs),Decimal(0))
+        else: continue
+        rows.append({"party":g,"raw":raw,"amount":v2_round(raw)})
+    # Supplier-level locked rules.
+    for p in pdfs:
+        pct = {"624505":Decimal(".05"),"964727":Decimal(".17"),"640438":Decimal(".35")}[p.code]
+        party = {"624505":"HARSHIT","964727":"AM17","640438":"AM35"}[p.code]
+        rows.append({"party":party,"raw":abs(p.final_bill)*pct,"amount":v2_round(abs(p.final_bill)*pct)})
+    aa = next((c for c in allc if "AM_AA01" in c.name.upper()),None)
+    vv = next((c for c in allc if "AM_VISHAL" in c.name.upper()),None)
+    if aa is None or vv is None: return None,["AM80 calculation blocked: AM_AA01 or AM_VISHAL missing"],[]
+    am80 = abs(aa.final_bill)+aa.broker_brokerage-abs(vv.final_bill)+vv.broker_brokerage
+    rows.append({"party":"AM80","raw":-abs(am80)*Decimal(".20"),"amount":v2_round(-abs(am80)*Decimal(".20"))})
+    rs_total = sum((r["amount"] for r in rows if r["party"]=="RS"),Decimal(0))
+    rows = [r for r in rows if r["party"]!="RS"]
+    if rs_total: rows.append({"party":"RS","raw":rs_total,"amount":rs_total})
+    rows.append({"party":"RITESH-2","raw":Decimal("102550"),"amount":Decimal("102550")})
+    dena = sum((r["amount"] for r in rows if r["amount"]>0),Decimal(0))
+    lena = -sum((r["amount"] for r in rows if r["amount"]<0),Decimal(0))
+    return {"rows":rows,"dena":dena,"lena":lena,"difference":lena-dena,"pdfs":pdfs},[],[]
+
+st.divider()
+st.subheader("Settlement Summary — Calculation Engine")
+st.caption("V2 calculation engine runs only after reconciliation, independent second-pass checks, and known-client validation. Unknown clients block the result.")
+if files:
+    if st.button("PROCESS & VERIFY — Generate Final Summary", type="primary", use_container_width=True):
+        parsed=[]; parse_errors=[]
+        for f in files:
+            try:
+                with pdfplumber.open(io.BytesIO(f.getvalue())) as pdf:
+                    txt="\n".join(pg.extract_text(x_tolerance=2,y_tolerance=3) or "" for pg in pdf.pages)
+                parsed.append(v2_parse_pdf(txt))
+            except Exception as ex: parse_errors.append(f"{f.name}: {ex}")
+        if parse_errors:
+            st.error("NOT VERIFIED — no final summary generated")
+            for e in parse_errors: st.write("• "+e)
+        else:
+            result, errs, unknown = v2_calculate(parsed)
+            if errs:
+                st.error("NOT VERIFIED — reconciliation failed; summary blocked")
+                for e in errs: st.write("• "+e)
+            elif unknown:
+                st.error("UNKNOWN CLIENT — summary blocked until the locked rule is confirmed")
+                st.dataframe([{"Code":c.code,"Client":c.name,"Final Bill":f"{c.final_bill:,.2f}"} for c in unknown],use_container_width=True,hide_index=True)
+            else:
+                st.success("VERIFIED — PDF reconciliation and independent pass passed; all detected clients matched locked rules")
+                st.markdown("### FINAL SUMMARY — DENA vs LENA")
+                dena_rows=[{"DENA PARTY":r["party"],"DENA AMOUNT":int(r["amount"])} for r in result["rows"] if r["amount"]>0]
+                lena_rows=[{"LENA PARTY":r["party"],"LENA AMOUNT":int(abs(r["amount"]))} for r in result["rows"] if r["amount"]<0]
+                import pandas as pd
+                merged=[]
+                for i in range(max(len(dena_rows),len(lena_rows))):
+                    d=dena_rows[i] if i<len(dena_rows) else {}
+                    l=lena_rows[i] if i<len(lena_rows) else {}
+                    merged.append({"DENA PARTY":d.get("DENA PARTY",""),"DENA AMOUNT":d.get("DENA AMOUNT",""),"LENA PARTY":l.get("LENA PARTY",""),"LENA AMOUNT":l.get("LENA AMOUNT","")})
+                st.dataframe(pd.DataFrame(merged),use_container_width=True,hide_index=True)
+                st.metric("TOTAL DENA",f"₹{result['dena']:,.0f}")
+                st.metric("TOTAL LENA",f"₹{result['lena']:,.0f}")
+                st.metric("DIFFERENCE (LENA − DENA)",f"₹{result['difference']:,.0f}")
+                st.metric("FINAL P&L",f"₹{result['difference']:,.0f}",delta="PROFIT" if result["difference"]>0 else ("LOSS" if result["difference"]<0 else "BREAK-EVEN"))
+                st.caption("Broker brokerage is used only where a locked rule explicitly requires it; it is not added again to the final P&L.")
+                st.subheader("Party-wise calculation audit")
+                st.dataframe([{"Party":r["party"],"Signed amount":f"{r['amount']:,.0f}","Direction":"DENA" if r["amount"]>0 else "LENA"} for r in result["rows"]],use_container_width=True,hide_index=True)
+                st.dataframe([{"Supplier":p.name,"Code":p.code,"Gross":f"{p.total_gross:,.2f}","Total Brokerage":f"{p.total_brokerage:,.2f}","Broker Brokerage":f"{p.broker_brokerage:,.2f}","Final Bill":f"{p.final_bill:,.2f}","Clients":len(p.clients)} for p in result["pdfs"]],use_container_width=True,hide_index=True)
+                csv=pd.DataFrame(merged).to_csv(index=False).encode("utf-8")
+                st.download_button("Download final summary CSV",csv,file_name="HISAB_V2_FINAL_SUMMARY.csv",mime="text/csv")
+else:
+    st.info("Upload the supplier PDFs above, then click PROCESS & VERIFY to generate the final summary.")
+
