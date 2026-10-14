@@ -27,11 +27,11 @@ def load_rules():
         return json.loads(base64.b64decode(p["content"]).decode()), p["sha"], None
     except Exception as e: return [], None, f"Could not load saved rules: {e}"
 
-def save_rules(rules, sha):
+def save_rules(rules, sha, message="Save HISAB V2 client rule"):
     h = gh_headers()
     if not h: return False, "Add GITHUB_TOKEN in Streamlit Cloud → Manage app → Settings → Secrets. It needs Contents read/write access to ravijainconnect/bill-summary-v2.0."
     url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{RULES_PATH}"
-    body = {"message":"Save HISAB V2 client rule",
+    body = {"message":message,
             "content":base64.b64encode(json.dumps(rules, ensure_ascii=False, indent=2).encode()).decode(),
             "branch":BRANCH}
     if sha: body["sha"] = sha
@@ -45,6 +45,15 @@ files = st.file_uploader("1. Upload settlement PDFs", type=["pdf"], accept_multi
 
 # Locked supplier/client mappings. PDF filenames are never used for identification.
 SUPPLIER_CODES = {"624505": "JAMES5", "964727": "AM 15", "640438": "AM RAVI 30"}
+# Exact client codes from HISAB_Client_Master_Rechecked_Filled.xlsx (23 verified mappings).
+# Code match protects known clients whose PDF display name varies; name patterns below
+# remain a secondary compatibility check. Unknown codes are never assigned a guessed rule.
+MASTER_CLIENT_CODES = {
+    "970083", "665826", "166386", "569816", "892104", "415200",
+    "830992", "181376", "707005", "197229", "840750", "492972",
+    "624733", "887684", "498413", "915871", "922247", "352250",
+    "217244", "680260", "914893", "320560", "887584",
+}
 KNOWN_CLIENT_PATTERNS = {
     "SONU MAK": ["SONI_SC_10L", "DILIP_SC_10L", "BAHETI_SC50L", "SP_MM", "SS12", "SUNIL_SC_10L"],
     "SONU SN": ["PRAHAL_SC_10L", "NISHIDHA_SC_5L", "GANESH_SC_5L", "VIMAL_SC5L"],
@@ -97,10 +106,12 @@ if files:
 
 rules, sha, error = load_rules()
 if error: st.warning(error)
-else: st.success(f"Saved rules loaded: {len(rules)}")
+else:
+    st.success(f"GitHub rule store read OK · {len(rules)} saved rule(s) loaded")
+    st.caption("Read access is verified on this load. Write access is confirmed only after the write-permission test or a successful permanent rule save.")
 
 known_clients = {str(x.get("detected_client", "")).strip().casefold() for x in rules if x.get("detected_client")}
-new_clients = [c for c in pdf_client_headers if known_client_group(c["name"]) is None and c["name"].strip().casefold() not in known_clients]
+new_clients = [c for c in pdf_client_headers if c["code"] not in MASTER_CLIENT_CODES and known_client_group(c["name"]) is None and c["name"].strip().casefold() not in known_clients]
 if new_clients:
     st.subheader("New Client Module")
     client_record = new_clients[0]
@@ -138,6 +149,17 @@ if new_clients:
             else: rules.pop(); st.error(msg)
 else:
     st.caption("No new client detected. New Client Module is hidden.")
+
+st.subheader("GitHub Saving Check")
+st.caption("This test writes the current rules back unchanged. It creates an audit commit but does not add or alter any client rule.")
+if st.button("Verify GitHub write access (no rule changes)", use_container_width=True):
+    ok, msg = save_rules(rules, sha, message="Verify HISAB V2 GitHub rule-store write access (no rule changes)")
+    if ok:
+        st.success("GitHub write access VERIFIED. Existing rule data was preserved unchanged.")
+        st.info("Reload the app once to refresh the file SHA before the next rule save.")
+    else:
+        st.error("GitHub write access NOT VERIFIED.")
+        st.write(msg)
 
 st.subheader("Saved Rules")
 if rules:
