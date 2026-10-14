@@ -212,7 +212,7 @@ st.caption("Calculation engine is available below. The app blocks the summary if
 
 
 # ---------------- V2 CALCULATION ENGINE (ported from HISAB V11) ----------------
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP, ROUND_UP, ROUND_DOWN
 from dataclasses import dataclass
 
 @dataclass
