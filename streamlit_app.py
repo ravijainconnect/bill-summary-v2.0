@@ -54,6 +54,16 @@ MASTER_CLIENT_CODES = {
     "624733", "887684", "498413", "915871", "922247", "352250",
     "217244", "680260", "914893", "320560", "887584", "647147",
 }
+CLIENT_CODE_GROUP = {
+    "970083":"SONU MAK", "665826":"SONU MAK", "166386":"SONU MAK",
+    "569816":"SONU MAK", "892104":"SONU MAK", "415200":"LV",
+    "830992":"MAHAVIR", "181376":"JANIE28", "707005":"TONY",
+    "197229":"RITESH", "840750":"RITESH", "492972":"RITESH",
+    "624733":"RITESH", "887684":"VIKRAM", "914893":"VIKRAM",
+    "498413":"SUMIT", "915871":"SONU SN", "922247":"PATNI",
+    "352250":"PATNI", "217244":"SPECIAL", "680260":"SONU SN",
+    "320560":"SONU SN", "887584":"SONU SN", "647147":"VM_LOKESH",
+}
 KNOWN_CLIENT_PATTERNS = {
     "SONU MAK": ["SONI_SC_10L", "DILIP_SC_10L", "BAHETI_SC50L", "SP_MM", "SS12", "SUNIL_SC_10L"],
     "SONU SN": ["PRAHAL_SC_10L", "NISHIDHA_SC_5L", "GANESH_SC_5L", "VIMAL_SC5L"],
@@ -67,7 +77,9 @@ KNOWN_CLIENT_PATTERNS = {
     "MAHAVIR": ["MAHAVIR"],
     "SPECIAL": ["AM_AA01", "AM_VISHAL"],
 }
-def known_client_group(client_name):
+def known_client_group(client_name, client_code=None):
+    if client_code and client_code in CLIENT_CODE_GROUP:
+        return CLIENT_CODE_GROUP[client_code]
     n = client_name.upper()
     for group, patterns in KNOWN_CLIENT_PATTERNS.items():
         if any(p in n for p in patterns):
@@ -116,7 +128,7 @@ known_clients = {str(x.get("detected_client", "")).strip().casefold() for x in r
 def client_match_status(c):
     if c["code"] in MASTER_CLIENT_CODES:
         return "Known — verified master code"
-    group = known_client_group(c["name"])
+    group = known_client_group(c["name"], c["code"])
     if group:
         return f"Known — locked group: {group}"
     if c["name"].strip().casefold() in known_clients:
@@ -261,8 +273,10 @@ def v2_reconcile(p):
 
 def v2_group(c):
     n = c.name.upper()
-    if c.code == "647147" or "VM_LOKESH" in n: return "VM_LOKESH"
-    if c.code == "181376" or "JANIE28" in n: return "JANIE28"
+    # Same verified master-code mapping as the Detected Client Audit.
+    if c.code in CLIENT_CODE_GROUP: return CLIENT_CODE_GROUP[c.code]
+    if "VM_LOKESH" in n: return "VM_LOKESH"
+    if "JANIE28" in n: return "JANIE28"
     if "AM_AA01" in n or "AM_VISHAL" in n: return "SPECIAL"
     pats = {
       "SONU MAK":["SONI_SC_10L","DILIP_SC_10L","BAHETI_SC50L","SP_MM","SS12","SUNIL_SC_10L"],
