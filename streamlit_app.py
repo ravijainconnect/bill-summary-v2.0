@@ -111,7 +111,33 @@ else:
     st.caption("Read access is verified on this load. Write access is confirmed only after the write-permission test or a successful permanent rule save.")
 
 known_clients = {str(x.get("detected_client", "")).strip().casefold() for x in rules if x.get("detected_client")}
-new_clients = [c for c in pdf_client_headers if c["code"] not in MASTER_CLIENT_CODES and known_client_group(c["name"]) is None and c["name"].strip().casefold() not in known_clients]
+
+def client_match_status(c):
+    if c["code"] in MASTER_CLIENT_CODES:
+        return "Known — verified master code"
+    group = known_client_group(c["name"])
+    if group:
+        return f"Known — locked group: {group}"
+    if c["name"].strip().casefold() in known_clients:
+        return "Known — saved rule"
+    return "UNKNOWN — blocks settlement"
+
+client_audit = []
+for c in pdf_client_headers:
+    client_audit.append({
+        "Supplier in PDF": c["supplier"],
+        "Client code": c["code"],
+        "Client name in PDF": c["name"],
+        "Recognition": client_match_status(c),
+        "Source file": c["file"],
+    })
+st.subheader("Detected Client Audit")
+if client_audit:
+    st.dataframe(client_audit, use_container_width=True, hide_index=True)
+else:
+    st.info("No client headers were extracted from the selected PDFs.")
+
+new_clients = [c for c in pdf_client_headers if client_match_status(c).startswith("UNKNOWN")]
 if new_clients:
     st.subheader("New Client Module")
     client_record = new_clients[0]
