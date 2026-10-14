@@ -42,31 +42,71 @@ def save_rules(rules, sha):
     except Exception as e: return False, f"Save failed: {e}"
 
 files = st.file_uploader("1. Upload settlement PDFs", type=["pdf"], accept_multiple_files=True)
-names = []
+
+# Locked supplier/client mappings. PDF filenames are never used for identification.
+SUPPLIER_CODES = {"624505": "JAMES5", "964727": "AM 15", "640438": "AM RAVI 30"}
+KNOWN_CLIENT_PATTERNS = {
+    "SONU MAK": ["SONI_SC_10L", "DILIP_SC_10L", "BAHETI_SC50L", "SP_MM", "SS12", "SUNIL_SC_10L"],
+    "SONU SN": ["PRAHAL_SC_10L", "NISHIDHA_SC_5L", "GANESH_SC_5L", "VIMAL_SC5L"],
+    "VIKRAM": ["PANKAJ", "VIPIN"],
+    "PATNI": ["GOPAL_", "HIMANSHU_"],
+    "RITESH": ["RISHI", "GULLU", "DHEERAJ", "_NB"],
+    "SUMIT": ["NITESH_SC4L"],
+    "LV": ["LV_"],
+    "TONY": ["TONY"],
+    "MAHAVIR": ["MAHAVIR"],
+    "SPECIAL": ["AM_AA01", "AM_VISHAL"],
+}
+def known_client_group(client_name):
+    n = client_name.upper()
+    for group, patterns in KNOWN_CLIENT_PATTERNS.items():
+        if any(p in n for p in patterns):
+            return group
+    return None
+
+supplier_names = []
+pdf_client_headers = []
+pdf_errors = []
 if files:
     for f in files:
         try:
             with pdfplumber.open(io.BytesIO(f.getvalue())) as pdf:
-                text = "\n".join(p.extract_text(x_tolerance=2, y_tolerance=3) or "" for p in pdf.pages)
-            match = re.search(r"\((\d{5,})\)\s*([^\n]+)", text)
-            if match:
-                n = match.group(2).strip()
-                if n and n not in names: names.append(n)
-        except Exception: pass
+                pdf_text = "\\n".join(p.extract_text(x_tolerance=2, y_tolerance=3) or "" for p in pdf.pages)
+            headers = list(re.finditer(r"^\\s*\\((\\d{6})\\)\\s*([^\\n]+?)\\s*$", pdf_text, re.M))
+            if not headers:
+                pdf_errors.append(f"{f.name}: supplier/client code headers not found inside PDF")
+                continue
+            supplier_code, supplier_name = headers[0].group(1), headers[0].group(2).strip()
+            if supplier_code not in SUPPLIER_CODES:
+                pdf_errors.append(f"{f.name}: unrecognized supplier code {supplier_code} ({supplier_name})")
+            else:
+                supplier_names.append(SUPPLIER_CODES[supplier_code])
+            # Only inner client headers can trigger New Client Module. Supplier header is excluded.
+            for m in headers[1:]:
+                item = {"code": m.group(1), "name": m.group(2).strip(), "supplier": supplier_name, "file": f.name}
+                if not any(x["code"] == item["code"] and x["name"].casefold() == item["name"].casefold() for x in pdf_client_headers):
+                    pdf_client_headers.append(item)
+        except Exception as e:
+            pdf_errors.append(f"{f.name}: PDF text extraction failed ({e})")
     st.caption(f"PDF files selected: {len(files)}")
-    st.write("Names detected (review before saving):" if names else "No names detected; PDF format needs validation.")
-    if names: st.write(", ".join(names))
+    st.write("Supplier names detected from PDF contents:" if supplier_names else "No known supplier detected from PDF contents.")
+    if supplier_names:
+        st.write(", ".join(supplier_names))
+    if pdf_errors:
+        for e in pdf_errors: st.warning(e)
 
 rules, sha, error = load_rules()
 if error: st.warning(error)
 else: st.success(f"Saved rules loaded: {len(rules)}")
 
 known_clients = {str(x.get("detected_client", "")).strip().casefold() for x in rules if x.get("detected_client")}
-new_clients = [n for n in names if n.strip().casefold() not in known_clients]
+new_clients = [c for c in pdf_client_headers if known_client_group(c["name"]) is None and c["name"].strip().casefold() not in known_clients]
 if new_clients:
     st.subheader("New Client Module")
-    client = new_clients[0]
-    st.text_input("1. FOUND NEW CLIENT (auto-detected / locked)", value=client or "Waiting for PDF detection", disabled=True)
+    client_record = new_clients[0]
+    client = client_record["name"]
+    st.text_input("1. FOUND NEW CLIENT (auto-detected / locked)", value=f'{client} (Code {client_record["code"]})', disabled=True)
+    st.warning("Unknown client detected. Settlement must remain blocked until its rule is saved and locked.")
     people = sorted({str(x.get("first_person","")) for x in rules if x.get("first_person")} |
                     {str(x.get("second_person","")) for x in rules if x.get("second_person")})
     choice = st.selectbox("2. 1ST LENDEN PERSON", [""] + people + ["＋ ADD NEW"])
@@ -85,9 +125,9 @@ if new_clients:
     kind = st.radio("Rule type", ["Additional sharing","Replacement sharing"])
     if st.button("Save Rule Permanently", type="primary", use_container_width=True):
         if not first: st.error("Select or enter the first lenden person.")
-        elif not client: st.error("Upload a PDF and ensure a client name is detected.")
+        elif not client: st.error("No client name detected inside PDF.")
         else:
-            new = {"detected_client":client,"first_person":first,"first_sharing_pct":share1,"first_basis":basis1,
+            new = {"detected_client":client,"detected_client_code":client_record["code"],"first_person":first,"first_sharing_pct":share1,"first_basis":basis1,
                    "first_broker_brokerage_sharing_pct":broker1,"first_total_brokerage_sharing_pct":total1,
                    "has_second_person":second,"second_basis":basis2,"second_sharing_pct":share2,
                    "second_broker_brokerage_sharing_pct":broker2,"second_total_brokerage_sharing_pct":total2,
@@ -96,7 +136,8 @@ if new_clients:
             ok, msg = save_rules(rules, sha)
             if ok: st.success(msg); st.rerun()
             else: rules.pop(); st.error(msg)
-
+else:
+    st.caption("No new client detected. New Client Module is hidden.")
 
 st.subheader("Saved Rules")
 if rules:
