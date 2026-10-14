@@ -152,7 +152,7 @@ else:
 
 st.subheader("GitHub Saving Check")
 st.caption("This test writes the current rules back unchanged. It creates an audit commit but does not add or alter any client rule.")
-if st.button("Verify GitHub write access (no rule changes)", use_container_width=True):
+if st.button("Verify GitHub write access (no rule changes)", use_container_width=True, disabled=bool(error or sha is None)):
     ok, msg = save_rules(rules, sha, message="Verify HISAB V2 GitHub rule-store write access (no rule changes)")
     if ok:
         st.success("GitHub write access VERIFIED. Existing rule data was preserved unchanged.")
