@@ -368,10 +368,10 @@ def v2_calculate(pdfs):
         raw = sum(((c.final_bill + c.broker_brokerage)*Decimal("0.10") for c in cs),Decimal(0))
         add("LV",raw)
 
-    # 100% LENA locked parties.
+    # Preserve signed PDF direction for TONY/MAHAVIR (approved summary uses source sign).
     for g in ("TONY","MAHAVIR"):
         cs = groups.get(g, [])
-        if cs: add(g,-sum((abs(c.final_bill) for c in cs),Decimal(0)))
+        if cs: add(g,sum((c.final_bill for c in cs),Decimal(0)))
 
     # JANIE28 is a direct signed pass-through, with no sharing deduction.
     cs = groups.get("JANIE28", [])
@@ -440,7 +440,7 @@ if files:
                 ])
                 expected = {
                     "SONU_SN":446093, "RS":128862, "JAMES5":78594, "RITESH":69852,
-                    "TONY":-45908, "AM80":18673, "AM 15":4263, "RITESH-2":102550,
+                    "TONY":45908, "AM80":18673, "AM 15":4263, "RITESH-2":102550,
                     "VIKRAM":-307340, "PATNI":-168485, "SONU MAK":-131862,
                     "SUMIT":-62111, "AM RAVI 30":-63994, "LV":-25327,
                 }
