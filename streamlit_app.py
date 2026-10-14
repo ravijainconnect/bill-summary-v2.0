@@ -71,8 +71,8 @@ if files:
     for f in files:
         try:
             with pdfplumber.open(io.BytesIO(f.getvalue())) as pdf:
-                pdf_text = "\\n".join(p.extract_text(x_tolerance=2, y_tolerance=3) or "" for p in pdf.pages)
-            headers = list(re.finditer(r"^\\s*\\((\\d{6})\\)\\s*([^\\n]+?)\\s*$", pdf_text, re.M))
+                pdf_text = "\n".join(p.extract_text(x_tolerance=2, y_tolerance=3) or "" for p in pdf.pages)
+            headers = list(re.finditer(r"^\s*\((\d{6})\)\s*([^\n]+?)\s*$", pdf_text, re.M))
             if not headers:
                 pdf_errors.append(f"{f.name}: supplier/client code headers not found inside PDF")
                 continue
