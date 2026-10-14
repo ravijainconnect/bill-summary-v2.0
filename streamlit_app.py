@@ -5,7 +5,7 @@ import streamlit as st
 import pdfplumber
 
 st.set_page_config(page_title="HISAB Version 2.0", page_icon="📊", layout="wide")
-OWNER, REPO, BRANCH, RULES_PATH = "ravijainconnect", "hisab-v2", "main", "saved_rules.json"
+OWNER, REPO, BRANCH, RULES_PATH = "ravijainconnect", "bill-summary-v2.0", "main", "saved_rules.json"
 
 st.title("📊 HISAB — Version 2.0")
 st.caption("Separate V2 app. The existing Version 1.0 repository/deployment is not modified.")
@@ -17,7 +17,7 @@ def gh_headers():
 
 def load_rules():
     h = gh_headers()
-    if not h: return [], None, "Persistent saving is not configured. Add GITHUB_TOKEN to Streamlit Secrets."
+    if not h: return [], None, "Permanent rule saving is disabled until GITHUB_TOKEN is added in Streamlit Cloud → Manage app → Settings → Secrets. Token must have Contents read/write access to ravijainconnect/bill-summary-v2.0."
     url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{RULES_PATH}?ref={BRANCH}"
     try:
         r = requests.get(url, headers=h, timeout=15)
@@ -29,7 +29,7 @@ def load_rules():
 
 def save_rules(rules, sha):
     h = gh_headers()
-    if not h: return False, "Add GITHUB_TOKEN in Streamlit Secrets to enable permanent saving."
+    if not h: return False, "Add GITHUB_TOKEN in Streamlit Cloud → Manage app → Settings → Secrets. It needs Contents read/write access to ravijainconnect/bill-summary-v2.0."
     url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{RULES_PATH}"
     body = {"message":"Save HISAB V2 client rule",
             "content":base64.b64encode(json.dumps(rules, ensure_ascii=False, indent=2).encode()).decode(),
