@@ -195,7 +195,7 @@ if rules:
 else: st.info("No rules saved yet.")
 
 st.subheader("Settlement Summary")
-st.warning("Final merged calculation is NOT implemented/validated in this build. Validate PDF extraction and existing Module 1–4 / Merge rules before relying on any final financial result.")
+st.caption("Calculation engine is available below. The app blocks the summary if reconciliation or client-rule checks fail.")
 
 
 # ---------------- V2 CALCULATION ENGINE (ported from HISAB V11) ----------------
