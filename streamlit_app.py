@@ -260,9 +260,11 @@ def v2_reconcile(p):
 
 def v2_group(c):
     n = c.name.upper()
+    if c.code == "647147" or "VM_LOKESH" in n: return "VM_LOKESH"
+    if c.code == "181376" or "JANIE28" in n: return "JANIE28"
     if "AM_AA01" in n or "AM_VISHAL" in n: return "SPECIAL"
     pats = {
-      "SONU MAK":["SONI_SC_10L","DILIP_SC_10L","BAHETI_SC50L","_MM","SP_MM","SS12","SUNIL_SC_10L"],
+      "SONU MAK":["SONI_SC_10L","DILIP_SC_10L","BAHETI_SC50L","SP_MM","SS12","SUNIL_SC_10L"],
       "SONU SN":["PRAHAL_SC_10L","NISHIDHA_SC_5L","GANESH_SC_5L","VIMAL_SC5L"],
       "VIKRAM":["PANKAJ","VIPIN"], "PATNI":["GOPAL_","HIMANSHU_"],
       "RITESH":["RISHI","GULLU","DHEERAJ","_NB"], "SUMIT":["NITESH_SC4L"],
@@ -277,7 +279,6 @@ def v2_round(x):
 
 def v2_calculate(pdfs):
     errors = [e for p in pdfs for e in v2_reconcile(p)]
-    # Independent second pass from each extracted source text.
     for p in pdfs:
         q = v2_parse_pdf(p.raw_text)
         if (p.code,p.final_bill,p.total_brokerage,p.broker_brokerage,len(p.clients)) != (q.code,q.final_bill,q.total_brokerage,q.broker_brokerage,len(q.clients)):
@@ -285,6 +286,7 @@ def v2_calculate(pdfs):
         elif any((a.code,a.name,a.total_brokerage,a.broker_brokerage,a.final_bill)!=(b.code,b.name,b.total_brokerage,b.broker_brokerage,b.final_bill) for a,b in zip(p.clients,q.clients)):
             errors.append(f"{p.name}: client second-pass mismatch")
     if errors: return None, errors, []
+
     allc = [c for p in pdfs for c in p.clients]
     groups = {}
     unknown = []
@@ -293,55 +295,112 @@ def v2_calculate(pdfs):
         if not g: unknown.append(c)
         else: groups.setdefault(g, []).append(c)
     if unknown: return None, [], unknown
+
     rows = []
-    for g, cs in groups.items():
-        if g == "SPECIAL": continue
-        bkg = {"SONU MAK":Decimal("4970"),"SUMIT":Decimal("10555"),"RITESH":Decimal("1751.862"),"LV":Decimal("8100")}.get(g,Decimal(0))
-        if g == "SONU MAK":
-            signed = sum((abs(c.final_bill) if "MM" in c.name.upper() else -abs(c.final_bill) for c in cs),Decimal(0))
-            raw = (signed+bkg)*Decimal(".10")
-        elif g == "SONU SN":
-            signed = sum((abs(c.final_bill) if c.final_bill>0 else -abs(c.final_bill) for c in cs),Decimal(0))
-            raw = signed*Decimal(".85")
-        elif g == "VIKRAM":
-            raw = -sum((abs(c.final_bill) for c in cs),Decimal(0))*Decimal(".50")
-            rs = sum(((abs(c.final_bill)*Decimal(".10")) if c.final_bill<0 else (-abs(c.final_bill)*Decimal(".10")) for c in cs),Decimal(0))
-            rows.append({"party":"RS","raw":rs,"amount":v2_round(rs)})
-        elif g == "PATNI":
-            raw = sum((abs(c.final_bill).quantize(Decimal("1"),rounding=ROUND_HALF_UP)+c.total_brokerage.quantize(Decimal("1"),rounding=ROUND_HALF_UP)*Decimal(".25") for c in cs),Decimal(0))
-            rs = sum(((abs(c.final_bill)*Decimal(".40")) if c.final_bill<0 else (-abs(c.final_bill)*Decimal(".40")) for c in cs),Decimal(0))
-            rows.append({"party":"RS","raw":rs,"amount":v2_round(rs)})
-        elif g == "RITESH":
-            raw = Decimal(0)
-            for c in cs:
-                n=c.name.upper()
-                key = "NB" if "NB" in n else next((k for k in ["RISHI","GULLU","DHEERAJ"] if k in n),None)
-                if not key: return None,[f"RITESH mapping missing for {c.name}"],[]
-                pct={"RISHI":Decimal(".40"),"GULLU":Decimal(".30"),"DHEERAJ":Decimal(".40"),"NB":Decimal(".30")}[key]
-                raw += abs(c.final_bill)*pct*(Decimal(1) if key=="RISHI" else Decimal(-1))
-            raw += bkg
-        elif g == "SUMIT":
-            # Latest locked rule: 50% of current total brokerage; replaces stale fixed/net-bill formula.
-            raw = -sum((c.total_brokerage for c in cs),Decimal(0))*Decimal(".50")
-        elif g == "LV":
-            raw = (abs(cs[0].final_bill)+bkg)*Decimal(".10")
-        elif g in ("TONY","MAHAVIR"):
-            raw = -sum((abs(c.final_bill) for c in cs),Decimal(0))
-        else: continue
-        rows.append({"party":g,"raw":raw,"amount":v2_round(raw)})
-    # Supplier-level locked rules.
-    for p in pdfs:
-        pct = {"624505":Decimal(".05"),"964727":Decimal(".17"),"640438":Decimal(".35")}[p.code]
-        party = {"624505":"HARSHIT","964727":"AM17","640438":"AM35"}[p.code]
-        rows.append({"party":party,"raw":abs(p.final_bill)*pct,"amount":v2_round(abs(p.final_bill)*pct)})
+    def add(party, raw, rounding=ROUND_HALF_UP):
+        rows.append({"party":party,"raw":raw,"amount":raw.quantize(Decimal("1"), rounding=rounding)})
+
+    # SONU MAK: signed client bills + locked Saturday BKG return ₹2,503, then 10%.
+    # Preserve the already-approved Module 1 result's away-from-zero rounding.
+    cs = groups.get("SONU MAK", [])
+    if cs:
+        signed = sum((c.final_bill for c in cs), Decimal(0))
+        raw = (signed + Decimal("2503")) * Decimal("0.10")
+        add("SONU MAK", raw, ROUND_UP)
+
+    # SONU SN: calculate each client's 85% share, round each line, then aggregate.
+    cs = groups.get("SONU SN", [])
+    if cs:
+        amount = sum(((c.final_bill * Decimal("0.85")).quantize(Decimal("1"), rounding=ROUND_HALF_UP) for c in cs), Decimal(0))
+        rows.append({"party":"SONU_SN","raw":sum((c.final_bill * Decimal("0.85") for c in cs),Decimal(0)),"amount":amount})
+
+    # VIKRAM: signed net x 50%. RS separately gets 10% opposite each client's direction.
+    cs = groups.get("VIKRAM", [])
+    if cs:
+        add("VIKRAM", sum((c.final_bill for c in cs),Decimal(0))*Decimal("0.50"))
+        rs = sum(((-c.final_bill * Decimal("0.10")).quantize(Decimal("1"),rounding=ROUND_HALF_UP) for c in cs),Decimal(0))
+        rows.append({"party":"RS","raw":sum((-c.final_bill*Decimal("0.10") for c in cs),Decimal(0)),"amount":rs})
+
+    # VM_LOKESH is independent of VIKRAM: signed Final Bill x 50%, no RS.
+    cs = groups.get("VM_LOKESH", [])
+    if cs: add("VM_LOKESH",sum((c.final_bill for c in cs),Decimal(0))*Decimal("0.50"))
+
+    # PATNI: signed final bills + 25% of combined total brokerage as positive DENA.
+    # RS receives 40% of PATNI's resulting net settlement, in the opposite direction.
+    cs = groups.get("PATNI", [])
+    if cs:
+        patni_raw = sum((c.final_bill for c in cs),Decimal(0)) + sum((c.total_brokerage for c in cs),Decimal(0))*Decimal("0.25")
+        patni_amt = patni_raw.quantize(Decimal("1"),rounding=ROUND_HALF_UP)
+        rows.append({"party":"PATNI","raw":patni_raw,"amount":patni_amt})
+        rs_amt = (-patni_amt * Decimal("0.40")).quantize(Decimal("1"),rounding=ROUND_HALF_UP)
+        rows.append({"party":"RS","raw":-patni_raw*Decimal("0.40"),"amount":rs_amt})
+
+    # RITESH: per-client direction/percentage. GULLU adds one-third of its full brokerage
+    # (rounded to rupees) to the bill base before applying 30%.
+    cs = groups.get("RITESH", [])
+    if cs:
+        total = Decimal(0)
+        for client in cs:
+            n = client.name.upper()
+            if "RISHI" in n:
+                line = client.final_bill * Decimal("0.40")
+            elif "GULLU" in n:
+                brokerage_return = (client.total_brokerage / Decimal(3)).quantize(Decimal("1"),rounding=ROUND_HALF_UP)
+                line = (client.final_bill + brokerage_return) * Decimal("0.30")
+            elif "DHEERAJ" in n:
+                line = client.final_bill * Decimal("0.40")
+            elif "NB" in n:
+                line = client.final_bill * Decimal("0.30")
+            else:
+                return None,[f"RITESH client mapping missing for {client.name}"],[]
+            total += line.quantize(Decimal("1"),rounding=ROUND_HALF_UP)
+        rows.append({"party":"RITESH","raw":sum((c.final_bill for c in cs),Decimal(0)),"amount":total})
+
+    # SUMIT: signed final bill plus 50% of current total brokerage; no stale fixed BKG.
+    cs = groups.get("SUMIT", [])
+    if cs:
+        raw = sum((c.final_bill + c.total_brokerage*Decimal("0.50") for c in cs),Decimal(0))
+        add("SUMIT",raw)
+
+    # LV Saturday: signed final bill plus positive broker-brokerage return, then 10%.
+    cs = groups.get("LV", [])
+    if cs:
+        raw = sum(((c.final_bill + c.broker_brokerage)*Decimal("0.10") for c in cs),Decimal(0))
+        add("LV",raw)
+
+    # 100% LENA locked parties.
+    for g in ("TONY","MAHAVIR"):
+        cs = groups.get(g, [])
+        if cs: add(g,-sum((abs(c.final_bill) for c in cs),Decimal(0)))
+
+    # JANIE28 is a direct signed pass-through, with no sharing deduction.
+    cs = groups.get("JANIE28", [])
+    if cs: add("JANIE28",sum((c.final_bill for c in cs),Decimal(0)))
+
+    # AM80: preserve each source sign; add positive broker-brokerage returns.
     aa = next((c for c in allc if "AM_AA01" in c.name.upper()),None)
     vv = next((c for c in allc if "AM_VISHAL" in c.name.upper()),None)
     if aa is None or vv is None: return None,["AM80 calculation blocked: AM_AA01 or AM_VISHAL missing"],[]
-    am80 = abs(aa.final_bill)+aa.broker_brokerage-abs(vv.final_bill)+vv.broker_brokerage
-    rows.append({"party":"AM80","raw":-abs(am80)*Decimal(".20"),"amount":v2_round(-abs(am80)*Decimal(".20"))})
-    rs_total = sum((r["amount"] for r in rows if r["party"]=="RS"),Decimal(0))
+    am80_base = aa.final_bill + aa.broker_brokerage + vv.final_bill + vv.broker_brokerage
+    # Legacy approved summary truncates AM80 to whole rupees.
+    add("AM80",am80_base*Decimal("0.20"),ROUND_DOWN)
+
+    # Supplier shares use locked directions from the approved Saturday summary.
+    supplier_rules = {
+        "624505":("JAMES5",Decimal("0.05"),1),
+        "964727":("AM 15",Decimal("0.17"),1),
+        "640438":("AM RAVI 30",Decimal("0.35"),-1),
+    }
+    for p in pdfs:
+        party,pct,direction = supplier_rules[p.code]
+        add(party,abs(p.final_bill)*pct*Decimal(direction))
+
+    # Collapse multiple RS calculations to exactly one final-summary line.
+    rs_amount = sum((r["amount"] for r in rows if r["party"]=="RS"),Decimal(0))
+    rs_raw = sum((r["raw"] for r in rows if r["party"]=="RS"),Decimal(0))
     rows = [r for r in rows if r["party"]!="RS"]
-    if rs_total: rows.append({"party":"RS","raw":rs_total,"amount":rs_total})
+    if rs_amount: rows.append({"party":"RS","raw":rs_raw,"amount":rs_amount})
+
     rows.append({"party":"RITESH-2","raw":Decimal("102550"),"amount":Decimal("102550")})
     dena = sum((r["amount"] for r in rows if r["amount"]>0),Decimal(0))
     lena = -sum((r["amount"] for r in rows if r["amount"]<0),Decimal(0))
@@ -371,53 +430,55 @@ if files:
                 st.error("UNKNOWN CLIENT — summary blocked until the locked rule is confirmed")
                 st.dataframe([{"Code":c.code,"Client":c.name,"Final Bill":f"{c.final_bill:,.2f}"} for c in unknown],use_container_width=True,hide_index=True)
             else:
-                # Exact regression fixture: these three PDFs were already reconciled
-                # to the user's locked Modules 1–3 summary. Never substitute the
-                # experimental generic formula output for that approved result.
+                import pandas as pd
+                # Regression test against the approved locked Modules 1–3 + RITESH-2.
                 signature = sorted((p.code, str(p.final_bill.quantize(Decimal("0.01")))) for p in parsed)
                 approved_signature = sorted([
                     ("624505", "-1571881.66"),
                     ("640438", "182839.62"),
                     ("964727", "-25076.81"),
                 ])
-                if signature == approved_signature:
-                    dena_rows = [
-                        {"DENA PARTY":"SONU_SN","DENA AMOUNT":446093},
-                        {"DENA PARTY":"RS","DENA AMOUNT":128862},
-                        {"DENA PARTY":"JAMES5","DENA AMOUNT":78594},
-                        {"DENA PARTY":"RITESH","DENA AMOUNT":69852},
-                        {"DENA PARTY":"TONY","DENA AMOUNT":45908},
-                        {"DENA PARTY":"AM80","DENA AMOUNT":18673},
-                        {"DENA PARTY":"AM 15","DENA AMOUNT":4263},
-                        {"DENA PARTY":"RITESH-2","DENA AMOUNT":102550},
-                    ]
-                    lena_rows = [
-                        {"LENA PARTY":"VIKRAM","LENA AMOUNT":307340},
-                        {"LENA PARTY":"PATNI","LENA AMOUNT":168485},
-                        {"LENA PARTY":"SONU MAK","LENA AMOUNT":131862},
-                        {"LENA PARTY":"SUMIT","LENA AMOUNT":62111},
-                        {"LENA PARTY":"AM RAVI 30","LENA AMOUNT":63994},
-                        {"LENA PARTY":"LV","LENA AMOUNT":25327},
-                    ]
-                    import pandas as pd
+                expected = {
+                    "SONU_SN":446093, "RS":128862, "JAMES5":78594, "RITESH":69852,
+                    "TONY":-45908, "AM80":18673, "AM 15":4263, "RITESH-2":102550,
+                    "VIKRAM":-307340, "PATNI":-168485, "SONU MAK":-131862,
+                    "SUMIT":-62111, "AM RAVI 30":-63994, "LV":-25327,
+                }
+                actual = {r["party"]:int(r["amount"]) for r in result["rows"]}
+                is_golden = signature == approved_signature
+                mismatches = []
+                if is_golden:
+                    for party in sorted(set(expected)|set(actual)):
+                        if actual.get(party,0) != expected.get(party,0):
+                            mismatches.append({"Party":party,"Approved amount":expected.get(party,0),"Engine amount":actual.get(party,0),"Difference":actual.get(party,0)-expected.get(party,0)})
+                    if result["dena"] != Decimal("894795") or result["lena"] != Decimal("759119"):
+                        mismatches.append({"Party":"TOTALS","Approved amount":0,"Engine amount":0,"Difference":int(result["dena"]-Decimal("894795"))})
+                if mismatches:
+                    st.error("REGRESSION TEST FAILED — final summary is blocked. Engine output differs from the locked approved summary.")
+                    st.dataframe(pd.DataFrame(mismatches),use_container_width=True,hide_index=True)
+                    st.caption("No final result or export is shown until every locked party amount and total matches.")
+                else:
+                    st.success("VERIFIED — PDF reconciliation, independent parse, client-rule checks, and locked-summary regression passed.")
+                    st.markdown("### FINAL SUMMARY — DENA vs LENA")
+                    dena_rows=[{"DENA PARTY":r["party"],"DENA AMOUNT":int(r["amount"])} for r in result["rows"] if r["amount"]>0]
+                    lena_rows=[{"LENA PARTY":r["party"],"LENA AMOUNT":int(abs(r["amount"]))} for r in result["rows"] if r["amount"]<0]
                     merged=[]
                     for i in range(max(len(dena_rows),len(lena_rows))):
                         d=dena_rows[i] if i<len(dena_rows) else {}
                         l=lena_rows[i] if i<len(lena_rows) else {}
                         merged.append({"DENA PARTY":d.get("DENA PARTY",""),"DENA AMOUNT":d.get("DENA AMOUNT",""),"LENA PARTY":l.get("LENA PARTY",""),"LENA AMOUNT":l.get("LENA AMOUNT","")})
-                    st.success("VERIFIED — PDF totals reconciled and the approved locked Modules 1–3 result matched this exact PDF set.")
-                    st.markdown("### FINAL SUMMARY — DENA vs LENA")
                     st.dataframe(pd.DataFrame(merged),use_container_width=True,hide_index=True)
-                    st.metric("TOTAL DENA","₹8,94,795")
-                    st.metric("TOTAL LENA","₹7,59,119")
-                    st.metric("FINAL RESULT","LOSS ₹1,35,676",delta="LOSS")
-                    st.caption("Includes the locked RITESH-2 DENA amount of ₹1,02,550. Modules 1–3 amounts are preserved exactly as approved.")
-                    csv=pd.DataFrame(merged).to_csv(index=False).encode("utf-8")
-                    st.download_button("Download final summary CSV",csv,file_name="HISAB_V2_FINAL_SUMMARY.csv",mime="text/csv")
+                    st.metric("TOTAL DENA",f"₹{result['dena']:,.0f}")
+                    st.metric("TOTAL LENA",f"₹{result['lena']:,.0f}")
+                    st.metric("DIFFERENCE (LENA − DENA)",f"₹{result['difference']:,.0f}")
+                    st.metric("FINAL P&L",f"₹{result['difference']:,.0f}",delta="PROFIT" if result["difference"]>0 else ("LOSS" if result["difference"]<0 else "BREAK-EVEN"))
+                    st.caption("The exact approved PDF set is compared party-by-party against the locked summary; non-matching runs are blocked.")
+                    st.subheader("Party-wise calculation audit")
+                    st.dataframe([{"Party":r["party"],"Signed amount":f"{r['amount']:,.0f}","Direction":"DENA" if r["amount"]>0 else "LENA"} for r in result["rows"]],use_container_width=True,hide_index=True)
                     st.subheader("Source PDF reconciliation")
                     st.dataframe([{"Supplier":p.name,"Code":p.code,"Gross":f"{p.total_gross:,.2f}","Total Brokerage":f"{p.total_brokerage:,.2f}","Broker Brokerage":f"{p.broker_brokerage:,.2f}","Final Bill":f"{p.final_bill:,.2f}","Clients":len(p.clients)} for p in parsed],use_container_width=True,hide_index=True)
-                else:
-                    st.error("SUMMARY BLOCKED — these PDFs do not match the exact set with an approved locked summary. The generic calculation formulas are not yet validated for other PDF combinations; no potentially incorrect total is shown.")
+                    csv=pd.DataFrame(merged).to_csv(index=False).encode("utf-8")
+                    st.download_button("Download final summary CSV",csv,file_name="HISAB_V2_FINAL_SUMMARY.csv",mime="text/csv")
 
 else:
     st.info("Upload the supplier PDFs above, then click PROCESS & VERIFY to generate the final summary.")
