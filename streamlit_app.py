@@ -48,8 +48,9 @@ if files:
         try:
             with pdfplumber.open(io.BytesIO(f.getvalue())) as pdf:
                 text = "\n".join(p.extract_text(x_tolerance=2, y_tolerance=3) or "" for p in pdf.pages)
-            for code, name in re.findall(r"\((\d{5,})\)\s*([^\n]+)", text):
-                n = name.strip()
+            match = re.search(r"\((\d{5,})\)\s*([^\n]+)", text)
+            if match:
+                n = match.group(2).strip()
                 if n and n not in names: names.append(n)
         except Exception: pass
     st.caption(f"PDF files selected: {len(files)}")
