@@ -7,8 +7,17 @@ import pdfplumber
 st.set_page_config(page_title="HISAB Version 2.0", page_icon="📊", layout="wide")
 OWNER, REPO, BRANCH, RULES_PATH = "ravijainconnect", "bill-summary-v2.0", "main", "saved_rules.json"
 
-st.title("📊 HISAB — Version 2.0")
-st.caption("Separate V2 app. The existing Version 1.0 repository/deployment is not modified.")
+st.markdown("""
+<style>
+.block-container {padding-top: 1.4rem; padding-bottom: 2rem; max-width: 1180px;}
+h1 {letter-spacing: -0.035em;}
+div[data-testid="stMetric"] {background: var(--secondary-background-color); padding: 14px 16px; border-radius: 12px;}
+div.stButton > button[kind="primary"] {border-radius: 10px; min-height: 3rem; font-weight: 650;}
+div[data-testid="stDownloadButton"] > button {border-radius: 10px; min-height: 2.8rem;}
+</style>
+""", unsafe_allow_html=True)
+st.title("📊 HISAB")
+st.caption("Settlement & P&L · Version 2.0")
 
 def gh_headers():
     token = st.secrets.get("GITHUB_TOKEN", "")
@@ -41,7 +50,7 @@ def save_rules(rules, sha, message="Save HISAB V2 client rule"):
         return True, "Rule saved to the HISAB V2 repository."
     except Exception as e: return False, f"Save failed: {e}"
 
-files = st.file_uploader("1. Upload settlement PDFs", type=["pdf"], accept_multiple_files=True)
+files = st.file_uploader("### 1. Upload settlement PDFs", type=["pdf"], accept_multiple_files=True, help="Upload all supplier settlement PDFs together.")
 
 # Locked supplier/client mappings. PDF filenames are never used for identification.
 SUPPLIER_CODES = {"624505": "JAMES5", "964727": "AM 15", "640438": "AM RAVI 30"}
@@ -110,18 +119,21 @@ if files:
                     pdf_client_headers.append(item)
         except Exception as e:
             pdf_errors.append(f"{f.name}: PDF text extraction failed ({e})")
-    st.caption(f"PDF files selected: {len(files)}")
-    st.write("Supplier names detected from PDF contents:" if supplier_names else "No known supplier detected from PDF contents.")
-    if supplier_names:
-        st.write(", ".join(supplier_names))
-    if pdf_errors:
-        for e in pdf_errors: st.warning(e)
+    with st.expander("PDF details", expanded=False):
+        st.caption(f"{len(files)} PDF file(s) selected")
+        st.write("Supplier names detected from PDF contents:" if supplier_names else "No known supplier detected from PDF contents.")
+        if supplier_names:
+            st.write(", ".join(supplier_names))
+        if pdf_errors:
+            for e in pdf_errors: st.warning(e)
 
 rules, sha, error = load_rules()
-if error: st.warning(error)
-else:
-    st.success(f"GitHub rule store read OK · {len(rules)} saved rule(s) loaded")
-    st.caption("Read access is verified on this load. Write access is confirmed only after the write-permission test or a successful permanent rule save.")
+with st.expander("Advanced · Rule storage and diagnostics", expanded=False):
+    if error:
+        st.warning(error)
+    else:
+        st.success(f"Rule storage connected · {len(rules)} saved rule(s)")
+        st.caption("Write access is confirmed only after a successful rule save or permission test.")
 
 known_clients = {str(x.get("detected_client", "")).strip().casefold() for x in rules if x.get("detected_client")}
 
@@ -144,11 +156,11 @@ for c in pdf_client_headers:
         "Recognition": client_match_status(c),
         "Source file": c["file"],
     })
-st.subheader("Detected Client Audit")
-if client_audit:
-    st.dataframe(client_audit, use_container_width=True, hide_index=True)
-else:
-    st.info("No client headers were extracted from the selected PDFs.")
+with st.expander("Detected client audit", expanded=False):
+    if client_audit:
+        st.dataframe(client_audit, use_container_width=True, hide_index=True)
+    else:
+        st.info("No client headers were extracted from the selected PDFs.")
 
 new_clients = [c for c in pdf_client_headers if client_match_status(c).startswith("UNKNOWN")]
 if new_clients:
@@ -187,28 +199,24 @@ if new_clients:
             if ok: st.success(msg); st.rerun()
             else: rules.pop(); st.error(msg)
 else:
-    st.caption("No new client detected. New Client Module is hidden.")
+    pass
 
-st.subheader("GitHub Saving Check")
-st.caption("This test writes the current rules back unchanged. It creates an audit commit but does not add or alter any client rule.")
-if st.button("Verify GitHub write access (no rule changes)", use_container_width=True, disabled=bool(error or sha is None)):
-    ok, msg = save_rules(rules, sha, message="Verify HISAB V2 GitHub rule-store write access (no rule changes)")
-    if ok:
-        st.success("GitHub write access VERIFIED. Existing rule data was preserved unchanged.")
-        st.info("Reload the app once to refresh the file SHA before the next rule save.")
+with st.expander("Advanced · Rule storage and diagnostics", expanded=False):
+    st.caption("The permission test creates an audit commit but preserves all existing rules.")
+    if st.button("Verify GitHub write access", use_container_width=True, disabled=bool(error or sha is None)):
+        ok, msg = save_rules(rules, sha, message="Verify HISAB V2 GitHub rule-store write access (no rule changes)")
+        if ok:
+            st.success("Write access verified. Existing rules preserved.")
+            st.info("Reload the app once to refresh the file SHA before the next rule save.")
+        else:
+            st.error("Write access not verified.")
+            st.write(msg)
+    if rules:
+        st.dataframe(rules, use_container_width=True, hide_index=True)
+        st.download_button("Download saved rules backup", json.dumps(rules, ensure_ascii=False, indent=2),
+                           file_name="hisab_v2_saved_rules_backup.json", mime="application/json")
     else:
-        st.error("GitHub write access NOT VERIFIED.")
-        st.write(msg)
-
-st.subheader("Saved Rules")
-if rules:
-    st.dataframe(rules, use_container_width=True, hide_index=True)
-    st.download_button("Download saved rules backup", json.dumps(rules, ensure_ascii=False, indent=2),
-                       file_name="hisab_v2_saved_rules_backup.json", mime="application/json")
-else: st.info("No rules saved yet.")
-
-st.subheader("Settlement Summary")
-st.caption("Calculation engine is available below. The app blocks the summary if reconciliation or client-rule checks fail.")
+        st.caption("No saved client rules yet.")
 
 
 # ---------------- V2 CALCULATION ENGINE (ported from HISAB V11) ----------------
@@ -422,8 +430,8 @@ def v2_calculate(pdfs):
     return {"rows":rows,"dena":dena,"lena":lena,"difference":lena-dena,"pdfs":pdfs},[],[]
 
 st.divider()
-st.subheader("Settlement Summary — Calculation Engine")
-st.caption("The verified result stays visible after downloads. Excel export includes the settlement, totals/P&L, party audit, and source PDF reconciliation.")
+st.subheader("2. Process & verify")
+st.caption("We check each PDF and client rule before showing the final settlement.")
 import hashlib
 import pandas as pd
 from openpyxl.utils import get_column_letter
@@ -436,7 +444,7 @@ if st.session_state.get("hisab_v2_upload_signature") != current_upload_signature
     st.session_state.pop("hisab_v2_summary_state", None)
 
 if files:
-    if st.button("PROCESS & VERIFY — Generate Final Summary", type="primary", use_container_width=True):
+    if st.button("⚡ PROCESS & VERIFY", type="primary", use_container_width=True):
         parsed = []
         parse_errors = []
         for f in files:
@@ -500,8 +508,8 @@ if files:
         elif state["status"] == "verified":
             result = state["result"]
             parsed = state["parsed"]
-            st.success("VERIFIED — PDF reconciliation, independent parse, client-rule checks, and locked-summary regression passed.")
-            st.markdown("### FINAL SUMMARY — DENA vs LENA")
+            st.success("Verified successfully")
+            st.markdown("### 3. Final settlement")
             dena_rows = [{"DENA PARTY":r["party"], "DENA AMOUNT":int(r["amount"])} for r in result["rows"] if r["amount"] > 0]
             lena_rows = [{"LENA PARTY":r["party"], "LENA AMOUNT":int(abs(r["amount"]))} for r in result["rows"] if r["amount"] < 0]
             merged = []
@@ -553,6 +561,6 @@ if files:
                 data=workbook.getvalue(), file_name="HISAB_V2_FINAL_SUMMARY.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="download_hisab_v2_excel")
-            st.caption("Excel sheets: Final Summary (includes Total DENA, Total LENA, Difference and Final P&L), Party Audit, PDF Reconciliation.")
+            st.caption("Excel includes the final totals and P&L, plus separate audit sheets.")
 else:
-    st.info("Upload the supplier PDFs above, then click PROCESS & VERIFY to generate the final summary.")
+    st.info("Upload your settlement PDFs above, then press **PROCESS & VERIFY**.")
