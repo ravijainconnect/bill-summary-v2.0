@@ -423,30 +423,38 @@ def v2_calculate(pdfs):
 
 st.divider()
 st.subheader("Settlement Summary — Calculation Engine")
-st.caption("V2 calculation engine runs only after reconciliation, independent second-pass checks, and known-client validation. Unknown clients block the result.")
+st.caption("The verified result stays visible after downloads. Excel export includes the settlement, totals/P&L, party audit, and source PDF reconciliation.")
+import hashlib
+import pandas as pd
+from openpyxl.utils import get_column_letter
+
+current_upload_signature = tuple(
+    (f.name, hashlib.sha256(f.getvalue()).hexdigest()) for f in (files or [])
+)
+if st.session_state.get("hisab_v2_upload_signature") != current_upload_signature:
+    st.session_state["hisab_v2_upload_signature"] = current_upload_signature
+    st.session_state.pop("hisab_v2_summary_state", None)
+
 if files:
     if st.button("PROCESS & VERIFY — Generate Final Summary", type="primary", use_container_width=True):
-        parsed=[]; parse_errors=[]
+        parsed = []
+        parse_errors = []
         for f in files:
             try:
                 with pdfplumber.open(io.BytesIO(f.getvalue())) as pdf:
-                    txt="\n".join(pg.extract_text(x_tolerance=2,y_tolerance=3) or "" for pg in pdf.pages)
+                    txt = "\n".join(pg.extract_text(x_tolerance=2, y_tolerance=3) or "" for pg in pdf.pages)
                 parsed.append(v2_parse_pdf(txt))
-            except Exception as ex: parse_errors.append(f"{f.name}: {ex}")
-        if parse_errors:
-            st.error("NOT VERIFIED — no final summary generated")
-            for e in parse_errors: st.write("• "+e)
-        else:
+            except Exception as ex:
+                parse_errors.append(f"{f.name}: {ex}")
+
+        state = {"status": "error", "errors": parse_errors, "unknown": [], "mismatches": []}
+        if not parse_errors:
             result, errs, unknown = v2_calculate(parsed)
             if errs:
-                st.error("NOT VERIFIED — reconciliation failed; summary blocked")
-                for e in errs: st.write("• "+e)
+                state.update(status="error", errors=errs)
             elif unknown:
-                st.error("UNKNOWN CLIENT — summary blocked until the locked rule is confirmed")
-                st.dataframe([{"Code":c.code,"Client":c.name,"Final Bill":f"{c.final_bill:,.2f}"} for c in unknown],use_container_width=True,hide_index=True)
+                state.update(status="unknown", unknown=unknown)
             else:
-                import pandas as pd
-                # Regression test against the approved locked Modules 1–3 + RITESH-2.
                 signature = sorted((p.code, str(p.final_bill.quantize(Decimal("0.01")))) for p in parsed)
                 approved_signature = sorted([
                     ("624505", "-1571881.66"),
@@ -459,42 +467,92 @@ if files:
                     "VIKRAM":-307340, "PATNI":-168485, "SONU MAK":-131862,
                     "SUMIT":-62111, "AM RAVI 30":-63994, "LV":-25327,
                 }
-                actual = {r["party"]:int(r["amount"]) for r in result["rows"]}
-                is_golden = signature == approved_signature
+                actual = {r["party"]: int(r["amount"]) for r in result["rows"]}
                 mismatches = []
-                if is_golden:
-                    for party in sorted(set(expected)|set(actual)):
-                        if actual.get(party,0) != expected.get(party,0):
-                            mismatches.append({"Party":party,"Approved amount":expected.get(party,0),"Engine amount":actual.get(party,0),"Difference":actual.get(party,0)-expected.get(party,0)})
+                if signature == approved_signature:
+                    for party in sorted(set(expected) | set(actual)):
+                        if actual.get(party, 0) != expected.get(party, 0):
+                            mismatches.append({"Party":party, "Approved amount":expected.get(party,0),
+                                               "Engine amount":actual.get(party,0),
+                                               "Difference":actual.get(party,0)-expected.get(party,0)})
                     if result["dena"] != Decimal("894795") or result["lena"] != Decimal("759119"):
-                        mismatches.append({"Party":"TOTALS","Approved amount":0,"Engine amount":0,"Difference":int(result["dena"]-Decimal("894795"))})
+                        mismatches.append({"Party":"TOTALS", "Approved amount":0, "Engine amount":0,
+                                           "Difference":int(result["dena"]-Decimal("894795"))})
                 if mismatches:
-                    st.error("REGRESSION TEST FAILED — final summary is blocked. Engine output differs from the locked approved summary.")
-                    st.dataframe(pd.DataFrame(mismatches),use_container_width=True,hide_index=True)
-                    st.caption("No final result or export is shown until every locked party amount and total matches.")
+                    state.update(status="regression_failed", mismatches=mismatches)
                 else:
-                    st.success("VERIFIED — PDF reconciliation, independent parse, client-rule checks, and locked-summary regression passed.")
-                    st.markdown("### FINAL SUMMARY — DENA vs LENA")
-                    dena_rows=[{"DENA PARTY":r["party"],"DENA AMOUNT":int(r["amount"])} for r in result["rows"] if r["amount"]>0]
-                    lena_rows=[{"LENA PARTY":r["party"],"LENA AMOUNT":int(abs(r["amount"]))} for r in result["rows"] if r["amount"]<0]
-                    merged=[]
-                    for i in range(max(len(dena_rows),len(lena_rows))):
-                        d=dena_rows[i] if i<len(dena_rows) else {}
-                        l=lena_rows[i] if i<len(lena_rows) else {}
-                        merged.append({"DENA PARTY":d.get("DENA PARTY",""),"DENA AMOUNT":d.get("DENA AMOUNT",""),"LENA PARTY":l.get("LENA PARTY",""),"LENA AMOUNT":l.get("LENA AMOUNT","")})
-                    st.dataframe(pd.DataFrame(merged),use_container_width=True,hide_index=True)
-                    st.metric("TOTAL DENA",f"₹{result['dena']:,.0f}")
-                    st.metric("TOTAL LENA",f"₹{result['lena']:,.0f}")
-                    st.metric("DIFFERENCE (LENA − DENA)",f"₹{result['difference']:,.0f}")
-                    st.metric("FINAL P&L",f"₹{result['difference']:,.0f}",delta="PROFIT" if result["difference"]>0 else ("LOSS" if result["difference"]<0 else "BREAK-EVEN"))
-                    st.caption("The exact approved PDF set is compared party-by-party against the locked summary; non-matching runs are blocked.")
-                    st.subheader("Party-wise calculation audit")
-                    st.dataframe([{"Party":r["party"],"Signed amount":f"{r['amount']:,.0f}","Direction":"DENA" if r["amount"]>0 else "LENA"} for r in result["rows"]],use_container_width=True,hide_index=True)
-                    st.subheader("Source PDF reconciliation")
-                    st.dataframe([{"Supplier":p.name,"Code":p.code,"Gross":f"{p.total_gross:,.2f}","Total Brokerage":f"{p.total_brokerage:,.2f}","Broker Brokerage":f"{p.broker_brokerage:,.2f}","Final Bill":f"{p.final_bill:,.2f}","Clients":len(p.clients)} for p in parsed],use_container_width=True,hide_index=True)
-                    csv=pd.DataFrame(merged).to_csv(index=False).encode("utf-8")
-                    st.download_button("Download final summary CSV",csv,file_name="HISAB_V2_FINAL_SUMMARY.csv",mime="text/csv")
+                    state.update(status="verified", result=result, parsed=parsed)
+        st.session_state["hisab_v2_summary_state"] = state
 
+    state = st.session_state.get("hisab_v2_summary_state")
+    if state:
+        if state["status"] == "error":
+            st.error("NOT VERIFIED — no final summary generated")
+            for e in state.get("errors", []):
+                st.write("• " + e)
+        elif state["status"] == "unknown":
+            st.error("UNKNOWN CLIENT — summary blocked until the locked rule is confirmed")
+            st.dataframe([{"Code":c.code, "Client":c.name, "Final Bill":f"{c.final_bill:,.2f}"} for c in state["unknown"]],
+                         use_container_width=True, hide_index=True)
+        elif state["status"] == "regression_failed":
+            st.error("REGRESSION TEST FAILED — final summary is blocked.")
+            st.dataframe(pd.DataFrame(state["mismatches"]), use_container_width=True, hide_index=True)
+        elif state["status"] == "verified":
+            result = state["result"]
+            parsed = state["parsed"]
+            st.success("VERIFIED — PDF reconciliation, independent parse, client-rule checks, and locked-summary regression passed.")
+            st.markdown("### FINAL SUMMARY — DENA vs LENA")
+            dena_rows = [{"DENA PARTY":r["party"], "DENA AMOUNT":int(r["amount"])} for r in result["rows"] if r["amount"] > 0]
+            lena_rows = [{"LENA PARTY":r["party"], "LENA AMOUNT":int(abs(r["amount"]))} for r in result["rows"] if r["amount"] < 0]
+            merged = []
+            for i in range(max(len(dena_rows), len(lena_rows))):
+                d = dena_rows[i] if i < len(dena_rows) else {}
+                l = lena_rows[i] if i < len(lena_rows) else {}
+                merged.append({"DENA PARTY":d.get("DENA PARTY",""), "DENA AMOUNT":d.get("DENA AMOUNT",""),
+                               "LENA PARTY":l.get("LENA PARTY",""), "LENA AMOUNT":l.get("LENA AMOUNT","")})
+            st.dataframe(pd.DataFrame(merged), use_container_width=True, hide_index=True)
+            st.metric("TOTAL DENA", f"₹{result['dena']:,.0f}")
+            st.metric("TOTAL LENA", f"₹{result['lena']:,.0f}")
+            st.metric("DIFFERENCE (LENA − DENA)", f"₹{result['difference']:,.0f}")
+            st.metric("FINAL P&L", f"₹{result['difference']:,.0f}",
+                      delta="PROFIT" if result["difference"] > 0 else ("LOSS" if result["difference"] < 0 else "BREAK-EVEN"))
+
+            party_audit = pd.DataFrame([{"Party":r["party"], "Signed amount":int(r["amount"]),
+                                         "Direction":"DENA" if r["amount"] > 0 else "LENA"}
+                                        for r in result["rows"]])
+            pdf_reconciliation = pd.DataFrame([{"Supplier":p.name, "Code":p.code,
+                "Gross":float(p.total_gross), "Total Brokerage":float(p.total_brokerage),
+                "Broker Brokerage":float(p.broker_brokerage), "Final Bill":float(p.final_bill),
+                "Clients":len(p.clients)} for p in parsed])
+
+            # Build a multi-sheet Excel workbook. Totals and P&L are explicit rows, not omitted.
+            summary_excel = pd.DataFrame(merged)
+            summary_excel = pd.concat([summary_excel, pd.DataFrame([
+                {"DENA PARTY":"TOTAL DENA", "DENA AMOUNT":int(result["dena"]), "LENA PARTY":"", "LENA AMOUNT":""},
+                {"DENA PARTY":"TOTAL LENA", "DENA AMOUNT":"", "LENA PARTY":"TOTAL LENA", "LENA AMOUNT":int(result["lena"])},
+                {"DENA PARTY":"", "DENA AMOUNT":"", "LENA PARTY":"DIFFERENCE (LENA − DENA)", "LENA AMOUNT":int(result["difference"])},
+                {"DENA PARTY":"", "DENA AMOUNT":"", "LENA PARTY":"FINAL P&L", "LENA AMOUNT":int(result["difference"])},
+            ])], ignore_index=True)
+
+            workbook = io.BytesIO()
+            with pd.ExcelWriter(workbook, engine="openpyxl") as writer:
+                summary_excel.to_excel(writer, sheet_name="Final Summary", index=False)
+                party_audit.to_excel(writer, sheet_name="Party Audit", index=False)
+                pdf_reconciliation.to_excel(writer, sheet_name="PDF Reconciliation", index=False)
+                for ws in writer.book.worksheets:
+                    ws.freeze_panes = "A2"
+                    ws.auto_filter.ref = ws.dimensions
+                    for column_cells in ws.columns:
+                        max_len = max((len(str(cell.value)) if cell.value is not None else 0) for cell in column_cells)
+                        ws.column_dimensions[get_column_letter(column_cells[0].column)].width = min(max(max_len + 2, 12), 32)
+                ws = writer.book["Final Summary"]
+                for row_idx in range(max(2, ws.max_row - 3), ws.max_row + 1):
+                    for cell in ws[row_idx]:
+                        cell.font = cell.font.copy(bold=True)
+            st.download_button("Download Excel — Final Summary + Totals + P&L",
+                data=workbook.getvalue(), file_name="HISAB_V2_FINAL_SUMMARY.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_hisab_v2_excel")
+            st.caption("Excel sheets: Final Summary (includes Total DENA, Total LENA, Difference and Final P&L), Party Audit, PDF Reconciliation.")
 else:
     st.info("Upload the supplier PDFs above, then click PROCESS & VERIFY to generate the final summary.")
-
