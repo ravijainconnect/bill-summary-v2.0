@@ -128,12 +128,6 @@ if files:
             for e in pdf_errors: st.warning(e)
 
 rules, sha, error = load_rules()
-with st.expander("Advanced · Rule storage and diagnostics", expanded=False):
-    if error:
-        st.warning(error)
-    else:
-        st.success(f"Rule storage connected · {len(rules)} saved rule(s)")
-        st.caption("Write access is confirmed only after a successful rule save or permission test.")
 
 known_clients = {str(x.get("detected_client", "")).strip().casefold() for x in rules if x.get("detected_client")}
 
@@ -202,6 +196,11 @@ else:
     pass
 
 with st.expander("Advanced · Rule storage and diagnostics", expanded=False):
+    if error:
+        st.warning(error)
+    else:
+        st.success(f"Rule storage connected · {len(rules)} saved rule(s)")
+        st.caption("Write access is confirmed only after a successful rule save or permission test.")
     st.caption("The permission test creates an audit commit but preserves all existing rules.")
     if st.button("Verify GitHub write access", use_container_width=True, disabled=bool(error or sha is None)):
         ok, msg = save_rules(rules, sha, message="Verify HISAB V2 GitHub rule-store write access (no rule changes)")
